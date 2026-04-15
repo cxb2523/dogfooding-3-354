@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 赛车游戏 - 已修复</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #000;
+        }
+        
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+        
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+        
+        #speed-display {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #00ff88;
+            padding: 15px 25px;
+            border-radius: 10px;
+            border: 2px solid #00ff88;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 0 0 10px #00ff88;
+        }
+        
+        #speed-value {
+            font-size: 36px;
+        }
+        
+        #speed-unit {
+            font-size: 16px;
+            color: #aaa;
+        }
+        
+        #lap-display {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #ffaa00;
+            padding: 15px 25px;
+            border-radius: 10px;
+            border: 2px solid #ffaa00;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 0 0 10px #ffaa00;
+        }
+        
+        #lap-value {
+            font-size: 36px;
+        }
+        
+        #controls-hint {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            padding: 15px 30px;
+            border-radius: 10px;
+            border: 2px solid #fff;
+            font-size: 18px;
+            text-align: center;
+        }
+        
+        .key {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.2);
+            padding: 5px 10px;
+            border-radius: 5px;
+            margin: 0 5px;
+            font-weight: bold;
+            color: #00ccff;
+        }
+        
+        #game-title {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #fff;
+            text-shadow: 0 0 20px rgba(0, 200, 255, 0.8);
+            transition: opacity 0.5s;
+        }
+        
+        #game-title h1 {
+            font-size: 72px;
+            margin-bottom: 20px;
+            background: linear-gradient(45deg, #00ccff, #ff00cc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        #game-title p {
+            font-size: 24px;
+            color: #aaa;
+        }
+        
+        .hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="ui-overlay">
+            <div id="speed-display">
+                <div><span id="speed-value">0</span> <span id="speed-unit">KM/H</span></div>
+            </div>
+            
+            <div id="lap-display">
+                <div>圈数 <span id="lap-value">0/3</span></div>
+            </div>
+            
+            <div id="controls-hint">
+                <span class="key">W</span> 加速
+                <span class="key">S</span> 刹车/倒车
+                <span class="key">A</span> 左转
+                <span class="key">D</span> 右转
+            </div>
+            
+            <div id="game-title">
+                <h1>3D 极速赛车</h1>
+                <p>按任意键开始游戏 (物理已修复)</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    
+    <script>
+        let scene, camera, renderer;
+        let car, carBody, wheels = [];
+        let trackCurve, trackMesh;
+        let decorations = [];
+        let clock = new THREE.Clock();
+        
+        let gameState = {
+            started: false,
+            lapCount: 0,
+            maxLaps: 3,
+            lastCheckpoint: -1,
+            checkpoints: []
+        };
+        
+        let carPhysics = {
+            position: new THREE.Vector3(),
+            velocity: new THREE.Vector3(),
+            speed: 0,
+            heading: 0,
+            steering: 0,
+            wheelRotation: 0,
+            onTrack: true
+        };
+        
+        let controls = {
+            forward: false,
+            backward: false,
+            left: false,
+            right: false
+        };
+        
+        const PHYSICS = {
+            MAX_SPEED: 80,
+            ACCELERATION: 30,
+            BRAKING: 60,
+            REVERSE_ACCELERATION: 20,
+            FRICTION: 8,
+            OFF_TRACK_FRICTION: 40,
+            TURN_SPEED: 4.5,
+            DRIFT_FACTOR: 0.3,
+            CAMERA_DISTANCE: 12,
+            CAMERA_HEIGHT: 5,
+            TRACK_WIDTH: 12,
+            TRACK_BOUNDARY: 6,
+            BOUNDARY_BOUNCE: 0.8,
+            WALL_SLIDE_FRICTION: 0.5,
+            WALL_PUSH_AWAY: 15
+        };
+        
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            scene.fog = new THREE.Fog(0x87CEEB, 20, 150);
+            
+            camera = new THREE.PerspectiveCamera(
+                60,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                1000
+            );
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('game-container').appendChild(renderer.domElement);
+            
+            setupLighting();
+            createGround();
+            createTrack();
+            createDecorations();
+            createCar();
+            setupEventListeners();
+            
+            window.addEventListener('resize', onWindowResize);
+            
+            animate();
+        }
+        
+        function setupLighting() {
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+            hemiLight.position.set(0, 200, 0);
+            scene.add(hemiLight);
+            
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+            dirLight.position.set(50, 100, 50);
+            dirLight.castShadow = true;
+            
+            dirLight.shadow.camera.top = 100;
+            dirLight.shadow.camera.bottom = -100;
+            dirLight.shadow.camera.left = -100;
+            dirLight.shadow.camera.right = 100;
+            dirLight.shadow.camera.near = 0.1;
+            dirLight.shadow.camera.far = 500;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
+            
+            scene.add(dirLight);
+        }
+        
+        function createGround() {
+            const geometry = new THREE.PlaneGeometry(500, 500);
+            const material = new THREE.MeshStandardMaterial({ 
+                color: 0x3a7a3a,
+                roughness: 0.8
+            });
+            const ground = new THREE.Mesh(geometry, material);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            scene.add(ground);
+        }
+        
+        function createTrack() {
+            const trackPoints = [
+                new THREE.Vector3(0, 0, 0),
+                new THREE.Vector3(40, 0, -30),
+                new THREE.Vector3(80, 0, 0),
+                new THREE.Vector3(80, 0, 50),
+                new THREE.Vector3(40, 0, 80),
+                new THREE.Vector3(0, 0, 50),
+                new THREE.Vector3(-40, 0, 80),
+                new THREE.Vector3(-80, 0, 50),
+                new THREE.Vector3(-80, 0, 0),
+                new THREE.Vector3(-40, 0, -30),
+            ];
+            
+            trackCurve = new THREE.CatmullRomCurve3(trackPoints, true);
+            trackCurve.tension = 0.5;
+            
+            const trackWidth = 12;
+            const curbWidth = 1.5;
+            
+            const trackGeometry = new THREE.TubeGeometry(
+                trackCurve,
+                200,
+                trackWidth / 2,
+                8,
+                true
+            );
+            
+            trackGeometry.scale(1, 0.05, 1);
+            
+            const trackMaterial = new THREE.MeshStandardMaterial({
+                color: 0x333333,
+                roughness: 0.9,
+                metalness: 0.1
+            });
+            
+            trackMesh = new THREE.Mesh(trackGeometry, trackMaterial);
+            trackMesh.position.y = 0.1;
+            trackMesh.receiveShadow = true;
+            scene.add(trackMesh);
+            
+            createCurbs(trackCurve, trackWidth / 2, curbWidth);
+            setupCheckpoints();
+        }
+        
+        function createCurbs(curve, trackRadius, curbWidth) {
+            const segments = 100;
+            const curbGroup = new THREE.Group();
+            
+            for (let i = 0; i < segments; i++) {
+                const t = i / segments;
+                const tNext = (i + 1) / segments;
+                
+                const point = curve.getPointAt(t);
+                const pointNext = curve.getPointAt(tNext);
+                
+                const tangent = curve.getTangentAt(t);
+                const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
+                
+                const leftPos = point.clone().add(normal.clone().multiplyScalar(trackRadius + curbWidth / 2));
+                const rightPos = point.clone().add(normal.clone().multiplyScalar(-trackRadius - curbWidth / 2));
+                
+                const color = (i % 4 < 2) ? 0xff0000 : 0xffffff;
+                
+                const curbGeo = new THREE.BoxGeometry(curbWidth, 0.3, curve.getLength() / segments + 0.5);
+                const curbMat = new THREE.MeshStandardMaterial({ color: color });
+                
+                const leftCurb = new THREE.Mesh(curbGeo, curbMat);
+                leftCurb.position.copy(leftPos);
+                leftCurb.position.y = 0.15;
+                leftCurb.lookAt(leftPos.clone().add(tangent));
+                curbGroup.add(leftCurb);
+                
+                const rightCurb = new THREE.Mesh(curbGeo, curbMat);
+                rightCurb.position.copy(rightPos);
+                rightCurb.position.y = 0.15;
+                rightCurb.lookAt(rightPos.clone().add(tangent));
+                curbGroup.add(rightCurb);
+            }
+            
+            scene.add(curbGroup);
+        }
+        
+        function setupCheckpoints() {
+            const checkpointCount = 8;
+            for (let i = 0; i < checkpointCount; i++) {
+                const t = i / checkpointCount;
+                const point = trackCurve.getPointAt(t);
+                gameState.checkpoints.push({
+                    position: point,
+                    index: i,
+                    passed: false
+                });
+            }
+        }
+        
+        function createDecorations() {
+            const treeCount = 40;
+            const billboardCount = 8;
+            
+            for (let i = 0; i < treeCount; i++) {
+                createTree();
+            }
+            
+            for (let i = 0; i < billboardCount; i++) {
+                createBillboard();
+            }
+        }
+        
+        function createTree() {
+            const angle = Math.random() * Math.PI * 2;
+            const distance = 25 + Math.random() * 60;
+            const x = Math.cos(angle) * distance;
+            const z = Math.sin(angle) * distance;
+            
+            const treeGroup = new THREE.Group();
+            
+            const trunkGeo = new THREE.CylinderGeometry(0.5, 0.8, 3, 6);
+            const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+            trunk.position.y = 1.5;
+            trunk.castShadow = true;
+            treeGroup.add(trunk);
+            
+            const leavesGeo = new THREE.ConeGeometry(3, 6, 6);
+            const leavesMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+            const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+            leaves.position.y = 5;
+            leaves.castShadow = true;
+            treeGroup.add(leaves);
+            
+            treeGroup.position.set(x, 0, z);
+            
+            const scale = 0.8 + Math.random() * 0.5;
+            treeGroup.scale.set(scale, scale, scale);
+            
+            scene.add(treeGroup);
+            decorations.push(treeGroup);
+        }
+        
+        function createBillboard() {
+            const t = Math.random();
+            const trackPoint = trackCurve.getPointAt(t);
+            const tangent = trackCurve.getTangentAt(t);
+            const normal = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
+            
+            const side = Math.random() > 0.5 ? 1 : -1;
+            const distance = 18;
+            const pos = trackPoint.clone().add(normal.clone().multiplyScalar(side * distance));
+            
+            const billboardGroup = new THREE.Group();
+            
+            const poleGeo = new THREE.BoxGeometry(0.3, 6, 0.3);
+            const poleMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+            const pole = new THREE.Mesh(poleGeo, poleMat);
+            pole.position.y = 3;
+            pole.castShadow = true;
+            billboardGroup.add(pole);
+            
+            const boardGeo = new THREE.BoxGeometry(6, 3, 0.2);
+            const colors = [0xff0000, 0x00ff00, 0x0000ff, 0xffff00, 0xff00ff];
+            const boardMat = new THREE.MeshStandardMaterial({ 
+                color: colors[Math.floor(Math.random() * colors.length)]
+            });
+            const board = new THREE.Mesh(boardGeo, boardMat);
+            board.position.y = 5;
+            board.castShadow = true;
+            billboardGroup.add(board);
+            
+            billboardGroup.position.copy(pos);
+            billboardGroup.lookAt(trackPoint);
+            
+            scene.add(billboardGroup);
+            decorations.push(billboardGroup);
+        }
+        
+        function createCar() {
+            car = new THREE.Group();
+            
+            const bodyGeo = new THREE.BoxGeometry(2, 0.8, 4);
+            const bodyMat = new THREE.MeshStandardMaterial({ 
+                color: 0xff0000,
+                metalness: 0.3,
+                roughness: 0.4
+            });
+            carBody = new THREE.Mesh(bodyGeo, bodyMat);
+            carBody.position.y = 0.8;
+            carBody.castShadow = true;
+            car.add(carBody);
+            
+            const cockpitGeo = new THREE.BoxGeometry(1.6, 0.6, 2);
+            const cockpitMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+            const cockpit = new THREE.Mesh(cockpitGeo, cockpitMat);
+            cockpit.position.y = 1.5;
+            cockpit.position.z = -0.3;
+            cockpit.castShadow = true;
+            car.add(cockpit);
+            
+            const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.3, 16);
+            const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+            
+            const wheelPositions = [
+                { x: -1.1, z: 1.2 },
+                { x: 1.1, z: 1.2 },
+                { x: -1.1, z: -1.2 },
+                { x: 1.1, z: -1.2 }
+            ];
+            
+            wheelPositions.forEach((pos, index) => {
+                const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+                wheel.rotation.z = Math.PI / 2;
+                wheel.position.set(pos.x, 0.4, pos.z);
+                wheel.castShadow = true;
+                wheel.userData.isFront = index < 2;
+                car.add(wheel);
+                wheels.push(wheel);
+            });
+            
+            const startPoint = trackCurve.getPointAt(0);
+            car.position.copy(startPoint);
+            car.position.y = 0;
+            
+            const tangent = trackCurve.getTangentAt(0);
+            carPhysics.heading = Math.atan2(tangent.x, tangent.z);
+            car.rotation.y = carPhysics.heading;
+            
+            carPhysics.position.copy(car.position);
+            
+            scene.add(car);
+        }
+        
+        function setupEventListeners() {
+            const keysPressed = {};
+            
+            window.addEventListener('keydown', (e) => {
+                if (keysPressed[e.key]) return;
+                keysPressed[e.key] = true;
+                
+                if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) {
+                    e.preventDefault();
+                }
+                
+                if (!gameState.started) {
+                    gameState.started = true;
+                    document.getElementById('game-title').classList.add('hidden');
+                }
+                
+                const key = e.key.toLowerCase();
+                if (key === 'w' || e.key === 'ArrowUp') {
+                    controls.forward = true;
+                }
+                if (key === 's' || e.key === 'ArrowDown') {
+                    controls.backward = true;
+                }
+                if (key === 'a' || e.key === 'ArrowLeft') {
+                    controls.left = true;
+                }
+                if (key === 'd' || e.key === 'ArrowRight') {
+                    controls.right = true;
+                }
+            }, false);
+            
+            window.addEventListener('keyup', (e) => {
+                keysPressed[e.key] = false;
+                
+                const key = e.key.toLowerCase();
+                if (key === 'w' || e.key === 'ArrowUp') {
+                    controls.forward = false;
+                }
+                if (key === 's' || e.key === 'ArrowDown') {
+                    controls.backward = false;
+                }
+                if (key === 'a' || e.key === 'ArrowLeft') {
+                    controls.left = false;
+                }
+                if (key === 'd' || e.key === 'ArrowRight') {
+                    controls.right = false;
+                }
+            }, false);
+            
+            window.addEventListener('blur', () => {
+                controls.forward = false;
+                controls.backward = false;
+                controls.left = false;
+                controls.right = false;
+                for (let key in keysPressed) {
+                    keysPressed[key] = false;
+                }
+            });
+        }
+        
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        
+        function updatePhysics(deltaTime) {
+            if (!gameState.started) return;
+            
+            deltaTime = Math.min(deltaTime, 0.1);
+            
+            let targetSteering = 0;
+            if (controls.left) targetSteering = PHYSICS.TURN_SPEED;
+            if (controls.right) targetSteering = -PHYSICS.TURN_SPEED;
+            
+            carPhysics.steering += (targetSteering - carPhysics.steering) * 8 * deltaTime;
+            
+            wheels.forEach(wheel => {
+                if (wheel.userData.isFront) {
+                    wheel.rotation.y = carPhysics.steering * 0.2;
+                }
+            });
+            
+            if (controls.forward) {
+                carPhysics.speed += PHYSICS.ACCELERATION * deltaTime;
+            } else if (controls.backward) {
+                if (carPhysics.speed > 1) {
+                    carPhysics.speed -= PHYSICS.BRAKING * deltaTime;
+                } else {
+                    carPhysics.speed -= PHYSICS.REVERSE_ACCELERATION * deltaTime;
+                }
+            }
+            
+            const friction = carPhysics.onTrack ? PHYSICS.FRICTION : PHYSICS.OFF_TRACK_FRICTION;
+            if (carPhysics.speed > 0) {
+                carPhysics.speed = Math.max(0, carPhysics.speed - friction * deltaTime);
+            } else if (carPhysics.speed < 0) {
+                carPhysics.speed = Math.min(0, carPhysics.speed + friction * deltaTime);
+            }
+            
+            const maxSpeed = carPhysics.onTrack ? PHYSICS.MAX_SPEED : PHYSICS.MAX_SPEED * 0.3;
+            carPhysics.speed = Math.max(-maxSpeed * 0.5, Math.min(maxSpeed, carPhysics.speed));
+            
+            const speedForTurn = Math.abs(carPhysics.speed);
+            if (speedForTurn > 0.1) {
+                const turnSensitivity = Math.min(1, 0.3 + (speedForTurn / PHYSICS.MAX_SPEED) * 0.7);
+                const turnAmount = carPhysics.steering * deltaTime * turnSensitivity * Math.sign(carPhysics.speed);
+                carPhysics.heading += turnAmount;
+            }
+            
+            const headingVector = new THREE.Vector3(
+                Math.sin(carPhysics.heading),
+                0,
+                Math.cos(carPhysics.heading)
+            );
+            
+            const targetVelocity = headingVector.clone().multiplyScalar(carPhysics.speed * deltaTime);
+            carPhysics.velocity.lerp(targetVelocity, 1 - PHYSICS.DRIFT_FACTOR);
+            
+            const newPosition = carPhysics.position.clone().add(carPhysics.velocity);
+            
+            const boundaryResult = enforceTrackBoundary(newPosition, carPhysics.velocity);
+            carPhysics.position.copy(boundaryResult.position);
+            carPhysics.onTrack = boundaryResult.onTrack;
+            
+            if (boundaryResult.hitBoundary) {
+                const boundaryNormal = boundaryResult.normal;
+                const normal2D = new THREE.Vector2(boundaryNormal.x, boundaryNormal.z).normalize();
+                const velocity2D = new THREE.Vector2(carPhysics.velocity.x, carPhysics.velocity.z);
+                
+                const dotProduct = velocity2D.dot(normal2D);
+                
+                const pushAwayVelocity = normal2D.clone().multiplyScalar(PHYSICS.WALL_PUSH_AWAY * deltaTime);
+                carPhysics.velocity.x += pushAwayVelocity.x;
+                carPhysics.velocity.z += pushAwayVelocity.y;
+                
+                if (dotProduct < -0.01) {
+                    const normalComponent = normal2D.clone().multiplyScalar(dotProduct);
+                    const tangentComponent = velocity2D.clone().sub(normalComponent);
+                    
+                    const reflectedNormal = normalComponent.multiplyScalar(-PHYSICS.BOUNDARY_BOUNCE);
+                    const dampedTangent = tangentComponent.multiplyScalar(PHYSICS.WALL_SLIDE_FRICTION);
+                    
+                    const newVelocity2D = reflectedNormal.add(dampedTangent);
+                    carPhysics.velocity.x = newVelocity2D.x + pushAwayVelocity.x;
+                    carPhysics.velocity.z = newVelocity2D.y + pushAwayVelocity.y;
+                    
+                    const heading2D = new THREE.Vector2(
+                        Math.sin(carPhysics.heading),
+                        Math.cos(carPhysics.heading)
+                    );
+                    const headingDotNormal = heading2D.dot(normal2D);
+                    if (Math.abs(headingDotNormal) > 0.3) {
+                        carPhysics.heading += Math.sign(headingDotNormal) * 0.3 * Math.sign(carPhysics.speed || 1);
+                    }
+                }
+                
+                if (carPhysics.speed > 0) {
+                    carPhysics.speed = Math.max(0, carPhysics.speed * 0.4);
+                } else {
+                    carPhysics.speed = Math.min(0, carPhysics.speed * 0.4);
+                }
+            }
+            
+            car.position.copy(carPhysics.position);
+            
+            const driftAngle = carPhysics.steering * PHYSICS.DRIFT_FACTOR * (Math.abs(carPhysics.speed) / PHYSICS.MAX_SPEED);
+            car.rotation.y = carPhysics.heading + driftAngle * Math.sign(carPhysics.speed);
+            
+            carPhysics.wheelRotation += carPhysics.speed * deltaTime * 0.5;
+            wheels.forEach(wheel => {
+                wheel.rotation.x = carPhysics.wheelRotation;
+            });
+            
+            checkLapProgress();
+        }
+        
+        function enforceTrackBoundary(position, velocity) {
+            let closestPoint = null;
+            let closestT = 0;
+            let minDistance = Infinity;
+            
+            for (let i = 0; i < 100; i++) {
+                const t = i / 100;
+                const point = trackCurve.getPointAt(t);
+                const distance = new THREE.Vector2(
+                    position.x - point.x,
+                    position.z - point.z
+                ).length();
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestPoint = point;
+                    closestT = t;
+                }
+            }
+            
+            const boundaryRadius = PHYSICS.TRACK_BOUNDARY - 0.5;
+            const boundaryNormal = new THREE.Vector3();
+            
+            if (minDistance > boundaryRadius) {
+                const direction = new THREE.Vector2(
+                    position.x - closestPoint.x,
+                    position.z - closestPoint.z
+                ).normalize();
+                
+                boundaryNormal.set(direction.x, 0, direction.y);
+                
+                const pushDistance = boundaryRadius * 0.98;
+                const clampedPosition = new THREE.Vector3(
+                    closestPoint.x + direction.x * pushDistance,
+                    position.y,
+                    closestPoint.z + direction.y * pushDistance
+                );
+                
+                return {
+                    position: clampedPosition,
+                    onTrack: false,
+                    hitBoundary: true,
+                    normal: boundaryNormal
+                };
+            }
+            
+            return {
+                position: position,
+                onTrack: minDistance < boundaryRadius - 1,
+                hitBoundary: false,
+                normal: boundaryNormal
+            };
+        }
+        
+        function checkLapProgress() {
+            let nearestCheckpoint = -1;
+            let minDistance = Infinity;
+            
+            gameState.checkpoints.forEach((cp, index) => {
+                const distance = new THREE.Vector2(
+                    carPhysics.position.x - cp.position.x,
+                    carPhysics.position.z - cp.position.z
+                ).length();
+                
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    nearestCheckpoint = index;
+                }
+            });
+            
+            if (nearestCheckpoint !== -1 && minDistance < 15) {
+                if (nearestCheckpoint !== gameState.lastCheckpoint) {
+                    const expectedNext = (gameState.lastCheckpoint + 1) % gameState.checkpoints.length;
+                    
+                    if (nearestCheckpoint === expectedNext || 
+                        (gameState.lastCheckpoint === -1 && nearestCheckpoint === 0)) {
+                        gameState.lastCheckpoint = nearestCheckpoint;
+                        
+                        if (nearestCheckpoint === 0 && gameState.lastCheckpoint !== -1) {
+                            gameState.lapCount++;
+                            updateUI();
+                            
+                            if (gameState.lapCount >= gameState.maxLaps) {
+                                setTimeout(() => {
+                                    alert('恭喜！你完成了比赛！');
+                                    resetGame();
+                                }, 100);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        function resetGame() {
+            gameState.lapCount = 0;
+            gameState.lastCheckpoint = -1;
+            carPhysics.speed = 0;
+            carPhysics.velocity.set(0, 0, 0);
+            
+            const startPoint = trackCurve.getPointAt(0);
+            carPhysics.position.copy(startPoint);
+            car.position.copy(startPoint);
+            
+            const tangent = trackCurve.getTangentAt(0);
+            carPhysics.heading = Math.atan2(tangent.x, tangent.z);
+            car.rotation.y = carPhysics.heading;
+            
+            updateUI();
+        }
+        
+        function updateCamera(deltaTime) {
+            if (!car) return;
+            
+            const headingVector = new THREE.Vector3(
+                Math.sin(carPhysics.heading),
+                0,
+                Math.cos(carPhysics.heading)
+            );
+            
+            const speedRatio = Math.abs(carPhysics.speed) / PHYSICS.MAX_SPEED;
+            const targetDistance = PHYSICS.CAMERA_DISTANCE + speedRatio * 3;
+            const targetHeight = PHYSICS.CAMERA_HEIGHT + speedRatio * 1;
+            
+            const targetPos = car.position.clone()
+                .sub(headingVector.clone().multiplyScalar(targetDistance * Math.sign(carPhysics.speed) || 1))
+                .add(new THREE.Vector3(0, targetHeight, 0));
+            
+            const tiltAmount = carPhysics.steering * speedRatio * 0.1;
+            targetPos.x += tiltAmount * 2;
+            
+            camera.position.lerp(targetPos, 3 * deltaTime);
+            
+            const lookAtPos = car.position.clone()
+                .add(headingVector.clone().multiplyScalar(10 * Math.sign(carPhysics.speed) || 1));
+            camera.lookAt(lookAtPos);
+            
+            const targetFOV = 60 + speedRatio * 15;
+            camera.fov += (targetFOV - camera.fov) * 2 * deltaTime;
+            camera.updateProjectionMatrix();
+        }
+        
+        function updateUI() {
+            const speedKMH = Math.abs(Math.round(carPhysics.speed));
+            document.getElementById('speed-value').textContent = speedKMH;
+            
+            document.getElementById('lap-value').textContent = 
+                `${gameState.lapCount}/${gameState.maxLaps}`;
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const deltaTime = clock.getDelta();
+            
+            updatePhysics(deltaTime);
+            updateCamera(deltaTime);
+            updateUI();
+            
+            renderer.render(scene, camera);
+        }
+        
+        init();
+    </script>
+</body>
+</html>
